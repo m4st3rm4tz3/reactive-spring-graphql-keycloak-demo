@@ -1,0 +1,33 @@
+[{
+  "_id": {
+    "$oid": "629d108339f7e61d9241481c"
+  },
+  "firstName": "first 1",
+  "lastName": "last 1",
+  "eMail": "first@last.com"
+},{
+  "_id": {
+    "$oid": "629d10ce39f7e61d9241481d"
+  },
+  "firstName": "first 2",
+  "lastName": "last 2"
+},{
+  "_id": {
+    "$oid": "629d10e139f7e61d9241481e"
+  },
+  "firstName": "first 3",
+  "lastName": "last 3"
+},{
+  "_id": {
+    "$oid": "629d10fe39f7e61d9241481f"
+  },
+  "firstName": "first 4",
+  "lastName": "last 4",
+  "eMail": "first4@last.com"
+},{
+  "_id": {
+    "$oid": "629d110a39f7e61d92414820"
+  },
+  "firstName": "first 5",
+  "lastName": "last 5"
+}]
