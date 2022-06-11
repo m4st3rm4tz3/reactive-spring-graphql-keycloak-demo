@@ -2,9 +2,7 @@ package com.example.demo.graphql;
 
 import com.example.demo.person.Person;
 import dasniko.testcontainers.keycloak.KeycloakContainer;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.admin.client.CreatedResponseUtil;
 import org.keycloak.admin.client.Keycloak;
@@ -28,10 +26,10 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -48,20 +46,14 @@ public class DemoControllerTests {
     private static final String KEYCLOAK_USERNAME = "user";
     private static final String KEYCLOAK_PASSWORD = "P@ssw0rd";
 
-    private static WebClient webClient;
-
-    private static String secret;
-    private static String token;
-    private static String refreshToken;
-
     @Container
     private static final MongoDBContainer MONGO_DB_CONTAINER = new MongoDBContainer("mongo:5.0")
-            .withClasspathResourceMapping("persons.json", "data/persons.json", BindMode.READ_ONLY)
+            .withCopyFileToContainer(MountableFile.forClasspathResource("data/persons.json"), "data/persons.json")
             .withExposedPorts(27017);
 
     @Container
     private static final KeycloakContainer KEYCLOAK_CONTAINER = new KeycloakContainer("quay.io/keycloak/keycloak:18.0.0")
-            .withRealmImportFile("realm-export.json")
+            .withRealmImportFile("data/realm-export.json")
             .withExposedPorts(8080);
 
     @DynamicPropertySource
@@ -70,62 +62,22 @@ public class DemoControllerTests {
         registry.add("spring.data.mongodb.uri", MONGO_DB_CONTAINER::getReplicaSetUrl);
     }
 
-    @Autowired
-    private HttpGraphQlTester anonymusGraphQlTester;
-    @Autowired
-    private HttpGraphQlTester authenticatedGraphQlTester;
+    private static String keycloakClientSecret;
+    private static String authorizationHeader;
 
     @BeforeAll
-    static void setupTestClass() throws IOException, InterruptedException {
+    static void setup() throws IOException, InterruptedException {
         setupKeycloak();
+        setAuthHeader();
         setupMongodb();
-
-        webClient = WebClient.builder()
-                .baseUrl(KEYCLOAK_CONTAINER.getAuthServerUrl() + "realms/test-realm/protocol/openid-connect")
-                .build();
-
-        MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
-        body.put("grant_type", List.of("password"));
-        body.put("client_id", List.of("demo"));
-        body.put("client_secret", List.of(secret));
-        body.put("username", List.of(KEYCLOAK_USERNAME));
-        body.put("password", List.of(KEYCLOAK_PASSWORD));
-
-        Map<String, String> response = webClient.post()
-                .uri("/token")
-                .body(BodyInserters.fromFormData(body))
-                .retrieve()
-                .bodyToMono(new ParameterizedTypeReference<Map<String, String>>() {})
-                .block();
-
-        assert response != null;
-        token = response.get("access_token");
-        refreshToken = response.get("refresh_token");
     }
 
-    @BeforeEach
-    void setupTest() {
-        authenticatedGraphQlTester = authenticatedGraphQlTester.mutate()
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-                .build();
-    }
-
-    @AfterAll
-    static void tearDownTestClass() {
-        MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
-        body.put("client_id", List.of("demo"));
-        body.put("refresh_token", List.of(refreshToken));
-
-        webClient.post()
-                .uri("/logout")
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
-                .body(BodyInserters.fromFormData(body))
-                .retrieve();
-    }
+    @Autowired
+    private HttpGraphQlTester graphQlTester;
 
     @Test
     void pingQuery_shouldReturnPong() {
-        anonymusGraphQlTester.document("""
+        graphQlTester.document("""
                         {
                             ping
                         }
@@ -136,7 +88,7 @@ public class DemoControllerTests {
 
     @Test
     void meQuery_shouldReturnNull() {
-        anonymusGraphQlTester.document("""
+        graphQlTester.document("""
                         {
                             me
                         }
@@ -147,7 +99,7 @@ public class DemoControllerTests {
 
     @Test
     void meQuery_shouldReturnUsername() {
-        authenticatedGraphQlTester.document("""
+        getAuthenticatedGraphQlTester().document("""
                         {
                             me
                         }
@@ -158,7 +110,7 @@ public class DemoControllerTests {
 
     @Test
     void personsQuery_shouldFailIfNotAuthenticated() {
-        anonymusGraphQlTester.document("""
+        graphQlTester.document("""
                         {
                             persons {
                                 firstName
@@ -176,7 +128,7 @@ public class DemoControllerTests {
 
     @Test
     void personsQuery_shouldReturnAllPersons() {
-        authenticatedGraphQlTester.document("""
+        getAuthenticatedGraphQlTester().document("""
                         {
                             persons {
                                 firstName
@@ -186,6 +138,12 @@ public class DemoControllerTests {
                         """)
                 .execute()
                 .path("$.data.persons").entityList(Person.class).hasSize(5);
+    }
+
+    private HttpGraphQlTester getAuthenticatedGraphQlTester() {
+        return graphQlTester.mutate()
+                .header(HttpHeaders.AUTHORIZATION, authorizationHeader)
+                .build();
     }
 
     private static void setupKeycloak() {
@@ -208,7 +166,30 @@ public class DemoControllerTests {
         RoleRepresentation role = realm.clients().get(client.getId()).roles().get("ADMIN").toRepresentation();
         user.roles().clientLevel(client.getId()).add(Collections.singletonList(role));
 
-        secret = realm.clients().get(client.getId()).getSecret().getValue();
+        keycloakClientSecret = realm.clients().get(client.getId()).getSecret().getValue();
+    }
+
+    private static void setAuthHeader() {
+        WebClient webClient = WebClient.builder()
+                .baseUrl(KEYCLOAK_CONTAINER.getAuthServerUrl() + "realms/test-realm/protocol/openid-connect")
+                .build();
+
+        MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
+        body.put("grant_type", List.of("password"));
+        body.put("client_id", List.of("demo"));
+        body.put("client_secret", List.of(keycloakClientSecret));
+        body.put("username", List.of(KEYCLOAK_USERNAME));
+        body.put("password", List.of(KEYCLOAK_PASSWORD));
+
+        Map<String, String> response = webClient.post()
+                .uri("/token")
+                .body(BodyInserters.fromFormData(body))
+                .retrieve()
+                .bodyToMono(new ParameterizedTypeReference<Map<String, String>>() {})
+                .block();
+
+        assert response != null;
+        authorizationHeader = response.get("token_type") + " " + response.get("access_token");
     }
 
     private static void setupMongodb() throws IOException, InterruptedException {
